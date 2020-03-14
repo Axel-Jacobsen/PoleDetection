@@ -17,9 +17,9 @@ class PoleDetection(nn.Module):
 
     def __init__(self, in_features=5):
         super(PoleDetection, self).__init__()
-        self.linear1 = nn.Linear(in_features, 512)
-        self.linear2 = nn.Linear(512, 512)
-        self.linear3 = nn.Linear(512, 256)
+        self.linear1 = nn.Linear(in_features, 256)
+        self.linear2 = nn.Linear(256, 256)
+        self.linear3 = nn.Linear(256, 256)
         self.linear4 = nn.Linear(256, 1)
 
     def forward(self, x):
@@ -116,13 +116,23 @@ class TrainModel(object):
             self.optimizer.step()
             self.optimizer.zero_grad()
             if i % div == 0:
-                print(f'EPOCH {i} \t LOSS {output.item():.3f}')
+                with torch.no_grad():
+                    outs = self.model(x_Data.train.float())
+                    validation_loss = loss(outs, y_Data.train.float())
+                    print(f'EPOCH {i} \t LOSS {output.item():.3f} \t VALIDATION LOSS {validation_loss.item():.3f}')
                 if plot:
                     train[j] = output.item()
                     j += 1
         if plot:
             plt.plot(range(len(train)), train)
             plt.show()
+
+        with torch.no_grad():
+            outs = self.model(y_Data.test.float())
+            test_loss = loss(outs, y_Data.test.float())
+            print(f'TEST LOSS: {test_loss.item():.3f}')
+        
+        torch.save(self.model.state_dict(), 'model.pth')
 
 
 def _aspect(data):
