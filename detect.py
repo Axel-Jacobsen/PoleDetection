@@ -128,7 +128,7 @@ class TrainModel(object):
             plt.show()
 
         with torch.no_grad():
-            outs = self.model(y_Data.test.float())
+            outs = self.model(x_Data.test.float())
             test_loss = loss(outs, y_Data.test.float())
             print(f'TEST LOSS: {test_loss.item():.3f}')
         
