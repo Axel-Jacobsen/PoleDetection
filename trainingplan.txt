@@ -1,0 +1,6 @@
+# Training Plan
+
+10000 batches: `weightedtrain1.pth`
+next 10000 will be with starting from `weightedtrain1.pth`
+weighting on training set, of trainingset *= 1 - sum(trainingset) / len(trainingset)
+

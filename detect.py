@@ -8,8 +8,13 @@ import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 torch.manual_seed(0)
+
+
+SAVEFILE = 'model.pth'
+
 
 class PoleDetection(nn.Module):
     """ Model Class for pole detection
@@ -18,23 +23,33 @@ class PoleDetection(nn.Module):
     def __init__(self, in_features=5):
         super(PoleDetection, self).__init__()
         self.linear1 = nn.Linear(in_features, 256)
-        self.linear2 = nn.Linear(256, 256)
-        self.linear3 = nn.Linear(256, 256)
-        self.linear4 = nn.Linear(256, 1)
+        self.linear2 = nn.Linear(256, 512)
+        self.dropout = nn.Dropout(0.1)
+        self.linear3 = nn.Linear(512, 512)
+        self.linear4 = nn.Linear(512, 256)
+        self.linear5 = nn.Linear(256, 1)
 
     def forward(self, x):
-        x = torch.tanh(self.linear1(x))
-        x = torch.tanh(self.linear2(x))
-        x = torch.tanh(self.linear3(x))
-        return torch.sigmoid(self.linear4(x))
+        leakyrelu = nn.LeakyReLU()
+        sigmoid = nn.Sigmoid()
+        x = leakyrelu(self.linear1(x))
+        x = leakyrelu(self.linear2(x))
+        x = self.dropout(x)
+        x = leakyrelu(self.linear3(x))
+        x = leakyrelu(self.linear4(x))
+        return sigmoid(self.linear5(x))
+
+    def load(self, filename):
+        self.load_state_dict(torch.load(filename))
+        self.eval()
 
 
 class TrainModel(object):
     """ Class to train Model
     """
 
-    BATCH_SIZE = 64
-    NUM_BATCHES = int(1e4)
+    BATCH_SIZE = 128
+    NUM_BATCHES = int(1e5)
     lr = 1e-4
 
     def __init__(self, model):
@@ -47,28 +62,34 @@ class TrainModel(object):
         """
         return np.load('pole_data.pkl', allow_pickle=True)
 
-    def split_data(self, data):
+    def split_data(self, data, weight=False):
         """
         Takes prepared data, splits it into training, validation, and test data
-        train           60 %
-        validation      20 %
+        train           70 %
+        validation      10 %
         test            20 %
         """
         magnitude = len(data)
         indicies = np.arange(magnitude)
         train_ids = np.random.choice(
-                np.array(indicies), size=int(magnitude * 0.6), replace=False
+                np.array(indicies), size=int(magnitude * 0.7), replace=False
         )
         indicies = np.setdiff1d(indicies, train_ids)
         validation_ids = np.random.choice(
-                indicies, size=int(magnitude * 0.2), replace=False
+                indicies, size=int(magnitude * 0.1), replace=False
         )
         indicies = np.setdiff1d(indicies, validation_ids)
         test_ids = np.array(indicies)
 
-        training = torch.as_tensor(data[train_ids])
+        training   = torch.as_tensor(data[train_ids])
         validation = torch.as_tensor(data[validation_ids])
-        testing = torch.as_tensor(data[test_ids])
+        testing    = torch.as_tensor(data[test_ids])
+
+        # Weight training values by making lower frequency labels
+        # have higher weighting
+        # intended for the y dataset only
+        if weight:
+            training *= 1 - sum(training) / len(training)
 
         Data = namedtuple('Data', ['train', 'validation', 'test'])
         return Data(training, validation, testing)
@@ -91,7 +112,7 @@ class TrainModel(object):
             ys[i] = sample[1]
 
         xs_pkt = self.split_data(xs)
-        ys_pkt = self.split_data(ys)
+        ys_pkt = self.split_data(ys, weight=True)
         return xs_pkt, ys_pkt
 
     def train(self, plot=False, div=100):
@@ -99,9 +120,11 @@ class TrainModel(object):
         x_Data, y_Data = self.prepare_data(data)
 
         if plot:
-            train = np.zeros(int(self.NUM_BATCHES / div))
+            train_results = np.zeros(int(self.NUM_BATCHES / div))
+            valid_results = np.zeros(int(self.NUM_BATCHES / div))
 
         loss = nn.BCELoss()
+
         j = 0
         for i in range(self.NUM_BATCHES):
             ids = np.random.choice(
@@ -115,25 +138,46 @@ class TrainModel(object):
             
             self.optimizer.step()
             self.optimizer.zero_grad()
+
+            # Do some printing/bookkeeping, no actual training here
             if i % div == 0:
+                print(f'EPOCH {i} \t LOSS {output.item():.3f}', end='\t')
                 with torch.no_grad():
-                    outs = self.model(x_Data.train.float())
-                    validation_loss = loss(outs, y_Data.train.float())
-                    print(f'EPOCH {i} \t LOSS {output.item():.3f} \t VALIDATION LOSS {validation_loss.item():.3f}')
-                if plot:
-                    train[j] = output.item()
-                    j += 1
+                    if i % (div * 10) == 0:
+                        outs = self.model(x_Data.train.float())
+                        validation_loss = loss(outs, y_Data.train.float())
+                        print(f'VALIDATION LOSS {validation_loss.item():.3f}')
+                    else:
+                        print()
+                    if plot:
+                        train_results[j] = output.item()
+                        valid_results[j] = validation_loss.item()
+                        j += 1
         if plot:
-            plt.plot(range(len(train)), train)
+            plt.plot(range(len(train_results)), train_results)
+            plt.plot(range(len(valid_results)), valid_results)
             plt.show()
+
+        print(self.accuracy_range(x_Data.test, y_Data.test))
 
         with torch.no_grad():
             outs = self.model(x_Data.test.float())
             test_loss = loss(outs, y_Data.test.float())
             print(f'TEST LOSS: {test_loss.item():.3f}')
         
-        torch.save(self.model.state_dict(), 'model.pth')
+        torch.save(self.model.state_dict(), SAVEFILE)
 
+    def accuracy(self, x_data, y_data, threshold=0.1):
+        y_output = self.model(x_data.float())
+        guesses = y_output > threshold
+        correct = guesses.int() & y_data.int()
+        return sum(correct) / sum(y_data)
+
+    def accuracy_range(self, x_data, y_data):
+        threshold = 0.1
+        for i in range(10):
+            print(f'threshold: {threshold:.3f} \t accuracy: {self.accuracy(x_data, y_data, threshold=threshold)}')
+            threshold += 0.1
 
 def _aspect(data):
     """ Ratio of width to height """
@@ -173,5 +217,8 @@ if __name__ == '__main__':
     )
     model = PoleDetection()
     trainer = TrainModel(model)
-    trainer.train(plot=True)
+    try:
+        trainer.train(plot=True)
+    except KeyboardInterrupt:
+        torch.save(trainer.model.state_dict(), SAVEFILE)
 
